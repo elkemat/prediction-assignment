@@ -4,26 +4,147 @@ author: "elkemat"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
+```{r setup, cache=TRUE, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+After importing the data from the csv file and some basic exploration of the 
+variables I split the data in training and testing data with random subsampling. 
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+```{r, warning=FALSE, message=FALSE, results="hide"}
+library(ggplot2)
+library(caret)
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+training.data <- read.csv(file = "pml-training.csv")
+testing.data <- read.csv(file = "pml-testing.csv")
 
-```{r cars}
-summary(cars)
+inTrain <- createDataPartition(y = training.data$classe, p = 0.75, list = FALSE)
+training <- training.data[inTrain, ]
+testing <- training.data[-inTrain, ]
+
+names(training)
+str(training)
 ```
 
-## Including Plots
+For the data six young healthy participants were asked to perform one set of 10 
+repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: 
 
-You can also embed plots, for example:
+* exactly according to the specification (Class A), 
+* throwing the elbows to the front (Class B), 
+* lifting the dumbbell only halfway (Class C), 
+* lowering the dumbbell only halfway (Class D) and 
+* throwing the hips to the front (Class E).
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+After exploring the data, I decided on using the acceleration data of the four 
+sensors (belt, arm, forearm and dumbbell) as they potentially vary between the 
+classes A to E. I created a new data frame only including these variables and 
+the classe.
+
+```{r, warning=FALSE, message=FALSE}
+training.predictors <- with(training, data.frame(classe,
+                                          #belt sensor
+                                          total_accel_belt, accel_belt_x, 
+                                          accel_belt_y, accel_belt_z,
+                                          # arm sensor
+                                          total_accel_arm, accel_arm_x, 
+                                          accel_arm_y, accel_arm_z,
+                                          # dumbbell sensor
+                                          total_accel_dumbbell, accel_dumbbell_x, 
+                                          accel_dumbbell_y, accel_dumbbell_z,
+                                          # forearm sensor
+                                          total_accel_forearm, accel_forearm_x, 
+                                          accel_forearm_y, accel_forearm_z))
+str(training.predictors)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+I then used "Spot Check Algorithms" (Reference: https://machinelearningmastery.com/evaluate-machine-learning-algorithms-with-r/) 
+to compare the accuracy of different algorithms. I set up the conditions to 
+assure comparability between the different algorithms (with set.seed etc.). 
+I used a 10-fold cross validation to get a better estimate of the accuracy with 
+the training set.
+
+```{r, warning=FALSE, message=FALSE}
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 1)
+seed <- 1234
+metric <- "Accuracy"
+```
+
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+# Linear Methods: Linear Discriminant Analysis
+set.seed(seed)
+fit.lda <- train(classe ~ ., data = training.predictors, method = "lda", 
+                 metric = metric, trControl = control)
+
+# Linear Methods: multinomial regression model 
+set.seed(seed)
+fit.glmnet <- train(classe ~ ., data = training.predictors, method = "glmnet", 
+                 metric = metric, trControl = control)
+
+# Non-Linear Methots: Naive Bayes
+set.seed(seed)
+fit.nb <- train(classe ~ ., data = training.predictors, method = "nb", 
+                 metric = metric, trControl = control)
+
+# Non-Linear Methots:kNN
+set.seed(seed)
+fit.knn <- train(classe ~ ., data = training.predictors, method = "knn", 
+                metric = metric, trControl = control)
+
+# Trees and Rules: CART
+set.seed(seed)
+fit.cart <- train(classe ~ ., data = training.predictors, method = "rpart", 
+                metric = metric, trControl = control)
+
+# Ensembles of Trees: Bagged CART
+set.seed(seed)
+fit.treebag<- train(classe ~ ., data = training.predictors, method = "treebag", 
+                metric = metric, trControl = control)
+
+# Ensembles of Trees: Random Forest
+set.seed(seed)
+fit.rf <- train(classe ~ ., data = training.predictors, method = "rf", 
+                metric = metric, trControl = control)
+
+# Ensembles of Trees: Stochastic Gradient Boosting (Generalized Boosted Modeling)
+set.seed(seed)
+fit.gbm <- train(classe ~ ., data = training.predictors, method = "gbm", 
+                metric = metric, trControl = control, verbose = FALSE)
+
+# resamples function in caret collates the resampling results from the models
+results <- resamples(list(lda = fit.lda, glmnet = fit.glmnet, nb = fit.nb, 
+                          knn = fit.knn, cart = fit.cart, treebag = fit.treebag, 
+                          rf = fit.rf, gbm = fit.gbm))
+
+# Comparison of algorithms
+summary(results)
+bwplot(results)
+```
+
+The "Spot Check Algorithms" shows that fitting a random forest has the highest accuracy.
+
+To avoid overfitting the model, I then tried to model only with the most important 
+variables given bei varImp() and compared it with the original model.
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+varImp(fit.rf)
+
+set.seed(seed)
+fit.rf.red <- train(classe ~ accel_dumbbell_y + accel_belt_z + accel_dumbbell_z 
+                    + accel_forearm_x + accel_dumbbell_x + accel_arm_x,
+                    data = training.predictors, method = "rf", 
+                    metric = metric, trControl = control)
+results2 <- resamples(list(rf = fit.rf, rf.red = fit.rf.red))
+summary(results2)
+bwplot(results2)
+```
+
+As the model with six predictors compared to 16 predictors only drops accuracy of 
+about 5% (from 94 to 89), I chose this model for the final validation.
+
+Applying the chosen model to the testing data set I separated at the beginning, 
+I assume the out of sample error to be 11% (1-Accuracy).
+
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+fit.rf.pred.red.out <- predict(fit.rf.red, newdata = testing)
+confusionMatrix(fit.rf.pred.red.out, testing$classe)
+```
+
